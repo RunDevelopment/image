@@ -5,7 +5,7 @@
 /// This trait is `pub` but not exported, so it cannot be implemented outside
 /// this crate.
 #[allow(private_bounds)]
-pub trait PrimitiveSealed: Sized + NearestFrom<f32> {}
+pub trait PrimitiveSealed: Sized + NearestFrom<f32> + InvertRange {}
 
 impl PrimitiveSealed for usize {}
 impl PrimitiveSealed for u8 {}
@@ -113,3 +113,35 @@ macro_rules! impl_nearest_from_f32_for_ints {
     )+ };
 }
 impl_nearest_from_f32_for_ints!(u32, u64, usize, i8, i16, i32, i64, isize);
+
+pub(crate) trait InvertRange {
+    /// Inverts the default range of this value.
+    ///
+    /// This has the following properties:
+    /// - `self.invert_range().invert_range() == self`
+    /// - `T::DEFAULT_MIN_VALUE.invert_range() == T::DEFAULT_MAX_VALUE` and
+    ///   `T::DEFAULT_MAX_VALUE.invert_range() == T::DEFAULT_MIN_VALUE`
+    ///
+    /// For floats, this is `1.0 - self`. For integers, this is `!self`.
+    fn invert_range(self) -> Self;
+}
+impl InvertRange for f32 {
+    fn invert_range(self) -> Self {
+        1.0 - self
+    }
+}
+impl InvertRange for f64 {
+    fn invert_range(self) -> Self {
+        1.0 - self
+    }
+}
+macro_rules! impl_invert_range_for_ints {
+    ($($t:ty),+) => { $(
+        impl InvertRange for $t {
+            fn invert_range(self) -> Self {
+                !self
+            }
+        }
+    )+ };
+}
+impl_invert_range_for_ints!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
