@@ -238,8 +238,8 @@ pub(crate) mod private {
     impl From<ColorType> for LayoutWithColor {
         fn from(color: ColorType) -> LayoutWithColor {
             match color {
-                ColorType::L8 | ColorType::L16 => LayoutWithColor::Luma,
-                ColorType::La8 | ColorType::La16 => LayoutWithColor::LumaAlpha,
+                ColorType::L8 | ColorType::L16 | ColorType::L32F => LayoutWithColor::Luma,
+                ColorType::La8 | ColorType::La16 | ColorType::La32F => LayoutWithColor::LumaAlpha,
                 ColorType::Rgb8 | ColorType::Rgb16 | ColorType::Rgb32F => LayoutWithColor::Rgb,
                 ColorType::Rgba8 | ColorType::Rgba16 | ColorType::Rgba32F => LayoutWithColor::Rgba,
             }
@@ -456,7 +456,7 @@ pub trait Pixel: Copy + Clone {
     #[inline]
     fn alpha(&self) -> Self::Subpixel {
         if Self::HAS_ALPHA {
-            *self.to_luma_alpha().channels().last().unwrap()
+            self.to_luma_alpha().0[1]
         } else {
             Self::Subpixel::DEFAULT_MAX_VALUE
         }
@@ -473,6 +473,22 @@ pub trait Pixel: Copy + Clone {
     /// Note: The slice length is not checked on creation. Thus the caller has to ensure
     /// that the slice is long enough to prevent panics if the pixel is used later on.
     fn from_slice_mut(slice: &mut [Self::Subpixel]) -> &mut Self;
+
+    /// Returns a slice of pixels from a slice of subpixels.
+    ///
+    /// If `slice.len()` is not a multiple of `CHANNEL_COUNT`, the longest prefix of whole pixels is returned.
+    fn pixels_from_channels(slice: &[Self::Subpixel]) -> &[Self];
+
+    /// Returns a mutable slice of pixels from a mutable slice of subpixels.
+    ///
+    /// If `slice.len()` is not a multiple of `CHANNEL_COUNT`, the longest prefix of whole pixels is returned.
+    fn pixels_from_channels_mut(slice: &mut [Self::Subpixel]) -> &mut [Self];
+
+    /// Returns a slice of subpixels from a slice of pixels.
+    fn pixels_as_channels(slice: &[Self]) -> &[Self::Subpixel];
+
+    /// Returns a mutable slice of subpixels from a mutable slice of pixels.
+    fn pixels_as_channels_mut(slice: &mut [Self]) -> &mut [Self::Subpixel];
 
     /// Create a pixel from setting all channels to the same value.
     fn broadcast(_: Self::Subpixel) -> Self;

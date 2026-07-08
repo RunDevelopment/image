@@ -1,4 +1,9 @@
-use crate::{flat::ViewOfPixel, math::Rect, GenericImage, GenericImageView, ImageBuffer, Pixel};
+use crate::{
+    flat::{ViewMutOfPixel, ViewOfPixel},
+    math::Rect,
+    GenericImage, GenericImageView, ImageBuffer, Pixel,
+};
+
 use std::ops::{Deref, DerefMut};
 
 /// A View into another image
@@ -88,8 +93,8 @@ impl<I> SubImage<I> {
         // fast path for row-major packed views
         if let Some(view) = self.to_pixel_view() {
             if let Some(row_iter) = view.iter_rows() {
-                for (row, out_row) in row_iter.zip(out.rows_mut().into_slices()) {
-                    out_row.copy_from_slice(row);
+                for (row, out_row) in row_iter.zip(out.rows_mut()) {
+                    Pixel::pixels_as_channels_mut(out_row).copy_from_slice(row);
                 }
                 return out;
             }
@@ -247,6 +252,20 @@ where
         // potentially optimized implementation gets used.
         self.image
             .copy_from(other, x + self.xoffset, y + self.yoffset)
+    }
+
+    fn to_pixel_view_mut(&mut self) -> Option<ViewMutOfPixel<'_, Self::Pixel>> {
+        let inner = self.image.to_pixel_view_mut()?;
+
+        // Now pivot the inner descriptor.
+        let mut descriptor = inner.into_inner();
+
+        let offset = descriptor.index(0, self.xoffset, self.yoffset)?;
+        descriptor.samples = descriptor.samples.get_mut(offset..)?;
+        descriptor.layout.width = self.xstride;
+        descriptor.layout.height = self.ystride;
+
+        descriptor.into_view_mut().ok()
     }
 }
 

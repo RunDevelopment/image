@@ -192,7 +192,9 @@ impl<W: Write> JpegEncoder<W> {
     ///
     /// # Panics
     ///
-    /// Panics if `width * height * color_type.bytes_per_pixel() != image.len()`.
+    /// Panics if the buffer does not hold exactly the number of bytes required for the given
+    /// `width`, `height`, and `color_type`, accounting for rows padded to whole bytes for
+    /// sub-byte color types: `height * ((width * color_type.bits_per_pixel() as u32 + 7) / 8)`.
     #[track_caller]
     fn encode(
         self,
@@ -299,7 +301,7 @@ impl<W: Write> ImageEncoder for JpegEncoder<W> {
         use ColorType::*;
         match img.color() {
             L8 | Rgb8 => None,
-            La8 | L16 | La16 => Some(img.to_luma8().into()),
+            La8 | L16 | L32F | La16 | La32F => Some(img.to_luma8().into()),
             Rgba8 | Rgb16 | Rgb32F | Rgba16 | Rgba32F => Some(img.to_rgb8().into()),
         }
     }
@@ -320,9 +322,9 @@ mod tests {
     use super::super::{JpegDecoder, JpegEncoder};
 
     fn decode(encoded: &[u8]) -> Vec<u8> {
-        let decoder = JpegDecoder::new(Cursor::new(encoded)).expect("Could not decode image");
-
-        let mut decoded = vec![0; decoder.total_bytes() as usize];
+        let mut decoder = JpegDecoder::new(Cursor::new(encoded));
+        let layout = decoder.prepare_image().unwrap();
+        let mut decoded = vec![0; layout.total_bytes() as usize];
         decoder
             .read_image(&mut decoded)
             .expect("Could not decode image");
@@ -403,8 +405,7 @@ mod tests {
                 .expect("Could not encode image");
         }
 
-        let mut decoder =
-            JpegDecoder::new(Cursor::new(encoded_img)).expect("Could not decode image");
+        let mut decoder = JpegDecoder::new(Cursor::new(encoded_img));
         let decoded_exif = decoder
             .exif_metadata()
             .expect("Error decoding Exif")
@@ -432,8 +433,7 @@ mod tests {
                 .expect("Could not encode image");
         }
 
-        let mut decoder =
-            JpegDecoder::new(Cursor::new(encoded_img)).expect("Could not decode image");
+        let mut decoder = JpegDecoder::new(Cursor::new(encoded_img));
         let decoded_xmp = decoder
             .xmp_metadata()
             .expect("Error decoding XMP")

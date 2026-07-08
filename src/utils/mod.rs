@@ -60,6 +60,8 @@ pub(crate) fn interleave_planes(out: &mut [u8], color: crate::ColorType, planes:
         crate::ColorType::La16 => trampoline::<2, 2>(out, planes),
         crate::ColorType::Rgb16 => trampoline::<3, 2>(out, planes),
         crate::ColorType::Rgba16 => trampoline::<4, 2>(out, planes),
+        crate::ColorType::L32F => trampoline::<1, 4>(out, planes),
+        crate::ColorType::La32F => trampoline::<2, 4>(out, planes),
         crate::ColorType::Rgb32F => trampoline::<3, 4>(out, planes),
         crate::ColorType::Rgba32F => trampoline::<4, 4>(out, planes),
     }
@@ -79,13 +81,6 @@ fn interleave_planes_inner<const PLANES: usize, const N: usize>(
             out[i] = vals[i].unwrap_or(out[i]);
         }
     }
-}
-
-/// Checks if the provided dimensions would cause an overflow.
-#[allow(dead_code)]
-// When no image formats that use it are enabled
-pub(crate) fn check_dimension_overflow(width: u32, height: u32, bytes_per_pixel: u8) -> bool {
-    u64::from(width) * u64::from(height) > u64::MAX / u64::from(bytes_per_pixel)
 }
 
 #[allow(dead_code)]

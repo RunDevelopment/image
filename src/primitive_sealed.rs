@@ -1,11 +1,16 @@
 //! Module for crate-private traits implemented for all primitive types.
 
+use crate::imageops::fast_blur::BlurAccumulator;
+
 /// Crate-private trait to seal the [`Primitive`](crate::Primitive) trait.
 ///
 /// This trait is `pub` but not exported, so it cannot be implemented outside
 /// this crate.
 #[allow(private_bounds)]
-pub trait PrimitiveSealed: Sized + NearestFrom<f32> + InvertRange {}
+pub trait PrimitiveSealed:
+    Sized + NearestFrom<f32> + WithBlurAcc + BgraSwizzle + RgbToLuma + InvertRange
+{
+}
 
 impl PrimitiveSealed for usize {}
 impl PrimitiveSealed for u8 {}
@@ -19,6 +24,47 @@ impl PrimitiveSealed for i32 {}
 impl PrimitiveSealed for i64 {}
 impl PrimitiveSealed for f32 {}
 impl PrimitiveSealed for f64 {}
+
+/// Defines specialized methods for rgb<->bgr and rgba<->bgra swizzles
+///
+/// By default, uses as_chunks_mut and swaps the first and third elements in the pixel slice.
+/// For u8 rgba however, benchmarks have shown that interpreting the 4 bytes as a u32 and swap+rotate
+/// ends up autovectorizing better.
+// Note: no attempts have been made to find if a similar optimization could apply to primitives beyond u8 or to bgr instead of bgra.
+pub(crate) trait BgraSwizzle: Sized {
+    fn swizzle_rgb_bgr(pixels: &mut [Self]) {
+        for pixel in pixels.as_chunks_mut::<3>().0 {
+            pixel.swap(0, 2);
+        }
+    }
+    fn swizzle_rgba_bgra(pixels: &mut [Self]) {
+        for pix in pixels.as_chunks_mut::<4>().0 {
+            pix.swap(0, 2);
+        }
+    }
+}
+
+impl BgraSwizzle for usize {}
+impl BgraSwizzle for u8 {
+    fn swizzle_rgba_bgra(pixels: &mut [Self]) {
+        for pix in pixels.as_chunks_mut::<4>().0 {
+            let bgra = u32::from_be_bytes(*pix);
+            let argb = bgra.swap_bytes(); // reverses order of channels (bytes)
+            let rgba = argb.rotate_left(8); // rotate first byte to last place
+            *pix = rgba.to_be_bytes();
+        }
+    }
+}
+impl BgraSwizzle for u16 {}
+impl BgraSwizzle for u32 {}
+impl BgraSwizzle for u64 {}
+impl BgraSwizzle for isize {}
+impl BgraSwizzle for i8 {}
+impl BgraSwizzle for i16 {}
+impl BgraSwizzle for i32 {}
+impl BgraSwizzle for i64 {}
+impl BgraSwizzle for f32 {}
+impl BgraSwizzle for f64 {}
 
 /// Returns the nearest value of `Self` to a given value.
 ///
@@ -113,6 +159,76 @@ macro_rules! impl_nearest_from_f32_for_ints {
     )+ };
 }
 impl_nearest_from_f32_for_ints!(u32, u64, usize, i8, i16, i32, i64, isize);
+
+/// Crate-private companion to [`Primitive`] that picks the box-blur
+/// accumulator type for each primitive.
+///
+/// `u8` uses an integer (`u32`) accumulator for speed; everything else goes
+/// through `f32`.
+pub(crate) trait WithBlurAcc: Sized {
+    type BlurAcc: BlurAccumulator<Self>;
+}
+
+impl WithBlurAcc for u8 {
+    type BlurAcc = u32;
+}
+
+macro_rules! impl_with_blur_acc_f32 {
+    ($($t:ty),+) => { $(
+        impl WithBlurAcc for $t {
+            type BlurAcc = f32;
+        }
+    )+ };
+}
+
+impl_with_blur_acc_f32!(u16, u32, u64, usize, i8, i16, i32, i64, isize, f32, f64);
+
+/// Converts sRGB to luma using standard coefficients for all primitives.
+pub(crate) trait RgbToLuma: Copy + Sized + crate::traits::Enlargeable {
+    #[inline]
+    fn rgb_to_luma(r: Self, g: Self, b: Self) -> Self {
+        use num_traits::NumCast;
+
+        /// Coefficients to transform from sRGB to a CIE Y (luminance) value.
+        const SRGB_LUMA: [u32; 3] = [2126, 7152, 722];
+        const SRGB_LUMA_DIV: u32 = 10000;
+
+        let l = <Self::Larger as NumCast>::from(SRGB_LUMA[0]).unwrap() * r.to_larger()
+            + <Self::Larger as NumCast>::from(SRGB_LUMA[1]).unwrap() * g.to_larger()
+            + <Self::Larger as NumCast>::from(SRGB_LUMA[2]).unwrap() * b.to_larger();
+        Self::clamp_from(l / <Self::Larger as NumCast>::from(SRGB_LUMA_DIV).unwrap())
+    }
+}
+impl RgbToLuma for usize {}
+impl RgbToLuma for u8 {
+    fn rgb_to_luma(r: u8, g: u8, b: u8) -> u8 {
+        // The following constants give the same results as:
+        //   ((r as u32 * 2126 + g as u32 * 7152 + b as u32 * 722 + 5000) / 10000) as u8
+        // Note that results are correctly rounded to the nearest integer.
+        const W_R: u32 = ((1_u64 << 24) * 2126).div_ceil(10000) as u32;
+        const W_G: u32 = ((1_u64 << 24) * 7152).div_ceil(10000) as u32;
+        const W_B: u32 = ((1_u64 << 24) * 722).div_ceil(10000) as u32;
+        ((r as u32 * W_R + g as u32 * W_G + b as u32 * W_B + 0x800000) >> 24) as u8
+    }
+}
+impl RgbToLuma for u16 {}
+impl RgbToLuma for u32 {}
+impl RgbToLuma for u64 {}
+impl RgbToLuma for isize {}
+impl RgbToLuma for i8 {}
+impl RgbToLuma for i16 {}
+impl RgbToLuma for i32 {}
+impl RgbToLuma for i64 {}
+impl RgbToLuma for f32 {
+    #[inline]
+    fn rgb_to_luma(r: f32, g: f32, b: f32) -> f32 {
+        const SCALE_R: f32 = 2126. / 10000.;
+        const SCALE_G: f32 = 7152. / 10000.;
+        const SCALE_B: f32 = 722. / 10000.;
+        SCALE_R * r + SCALE_G * g + SCALE_B * b
+    }
+}
+impl RgbToLuma for f64 {}
 
 pub(crate) trait InvertRange {
     /// Inverts the default range of this value.
