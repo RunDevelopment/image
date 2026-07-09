@@ -4,6 +4,7 @@ use num_traits::{NumCast, ToPrimitive};
 
 use crate::color::{FromColor, IntoColor, Luma, LumaA};
 use crate::metadata::{CicpColorPrimaries, CicpTransferCharacteristics};
+use crate::primitive_sealed::NearestFrom;
 use crate::traits::{Pixel, Primitive};
 use crate::utils::clamp;
 use crate::{GenericImage, GenericImageView, ImageBuffer};
@@ -217,9 +218,7 @@ fn new_apply_brightness<P: Pixel>(mut amount: f32) -> impl Fn(P) -> P {
         pixel.map_with_alpha(
             move |b| {
                 let c: f32 = NumCast::from(b).unwrap();
-                let d = clamp(c + amount, min, max);
-
-                NumCast::from(d).unwrap()
+                NearestFrom::clamp_nearest_from(c + amount)
             },
             |alpha| alpha,
         )
