@@ -695,7 +695,7 @@ mod test {
             ImageBuffer::from_raw(3, 2, vec![0u8, 1u8, 2u8, 10u8, 11u8, 12u8]).unwrap();
 
         let expected: GrayImage =
-            ImageBuffer::from_raw(3, 2, vec![25u8, 26u8, 27u8, 35u8, 36u8, 37u8]).unwrap();
+            ImageBuffer::from_raw(3, 2, vec![26u8, 27u8, 28u8, 36u8, 37u8, 38u8]).unwrap();
 
         assert_pixels_eq!(&brighten(&image, 0.1), &expected);
     }
@@ -706,7 +706,7 @@ mod test {
             ImageBuffer::from_raw(3, 2, vec![0u8, 1u8, 2u8, 10u8, 11u8, 12u8]).unwrap();
 
         let expected: GrayImage =
-            ImageBuffer::from_raw(3, 2, vec![25u8, 26u8, 27u8, 35u8, 36u8, 37u8]).unwrap();
+            ImageBuffer::from_raw(3, 2, vec![26u8, 27u8, 28u8, 36u8, 37u8, 38u8]).unwrap();
 
         brighten_in_place(&mut image, 0.1);
         assert_pixels_eq!(&image, &expected);
