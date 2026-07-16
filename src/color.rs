@@ -313,7 +313,6 @@ impl ExtendedColorType {
             ExtendedColorType::La32F => Some(ColorType::La32F),
             ExtendedColorType::Rgb32F => Some(ColorType::Rgb32F),
             ExtendedColorType::Rgba32F => Some(ColorType::Rgba32F),
-            ExtendedColorType::YCbCr8 => Some(ColorType::Rgb8),
             _ => None,
         }
     }
@@ -463,22 +462,10 @@ impl<T: $($bound+)*> Pixel for $ident<T> {
         pix
     }
 
-    fn map<F>(& self, f: F) -> $ident<T> where F: FnMut(T) -> T {
-        let mut this = (*self).clone();
-        this.apply(f);
-        this
-    }
-
     fn apply<F>(&mut self, mut f: F) where F: FnMut(T) -> T {
         for v in &mut self.0 {
             *v = f(*v)
         }
-    }
-
-    fn map_with_alpha<F, G>(&self, f: F, g: G) -> $ident<T> where F: FnMut(T) -> T, G: FnMut(T) -> T {
-        let mut this = (*self).clone();
-        this.apply_with_alpha(f, g);
-        this
     }
 
     fn apply_with_alpha<F, G>(&mut self, mut f: F, mut g: G) where F: FnMut(T) -> T, G: FnMut(T) -> T {
@@ -491,12 +478,6 @@ impl<T: $($bound+)*> Pixel for $ident<T> {
         if let Some(v) = self.0.get_mut(ALPHA) {
             *v = g(*v)
         }
-    }
-
-    fn map2<F>(&self, other: &Self, f: F) -> $ident<T> where F: FnMut(T, T) -> T {
-        let mut this = (*self).clone();
-        this.apply2(other, f);
-        this
     }
 
     fn apply2<F>(&mut self, other: &$ident<T>, mut f: F) where F: FnMut(T, T) -> T {

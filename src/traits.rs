@@ -508,7 +508,12 @@ pub trait Pixel: Copy + Clone {
     /// Apply the function ```f``` to each channel of this pixel.
     fn map<F>(&self, f: F) -> Self
     where
-        F: FnMut(Self::Subpixel) -> Self::Subpixel;
+        F: FnMut(Self::Subpixel) -> Self::Subpixel,
+    {
+        let mut this = *self;
+        this.apply(f);
+        this
+    }
 
     /// Apply the function ```f``` to each channel of this pixel.
     fn apply<F>(&mut self, f: F)
@@ -520,7 +525,12 @@ pub trait Pixel: Copy + Clone {
     fn map_with_alpha<F, G>(&self, f: F, g: G) -> Self
     where
         F: FnMut(Self::Subpixel) -> Self::Subpixel,
-        G: FnMut(Self::Subpixel) -> Self::Subpixel;
+        G: FnMut(Self::Subpixel) -> Self::Subpixel,
+    {
+        let mut this = *self;
+        this.apply_with_alpha(f, g);
+        this
+    }
 
     /// Apply the function ```f``` to each channel except the alpha channel.
     /// Apply the function ```g``` to the alpha channel. Works in-place.
@@ -534,9 +544,7 @@ pub trait Pixel: Copy + Clone {
     where
         F: FnMut(Self::Subpixel) -> Self::Subpixel,
     {
-        let mut this = *self;
-        this.apply_with_alpha(f, |x| x);
-        this
+        self.map_with_alpha(f, |x| x)
     }
 
     /// Apply the function ```f``` to each channel except the alpha channel.
@@ -552,7 +560,12 @@ pub trait Pixel: Copy + Clone {
     /// ```other``` pairwise.
     fn map2<F>(&self, other: &Self, f: F) -> Self
     where
-        F: FnMut(Self::Subpixel, Self::Subpixel) -> Self::Subpixel;
+        F: FnMut(Self::Subpixel, Self::Subpixel) -> Self::Subpixel,
+    {
+        let mut this = *self;
+        this.apply2(other, f);
+        this
+    }
 
     /// Apply the function ```f``` to each channel of this pixel and
     /// ```other``` pairwise. Works in-place.
