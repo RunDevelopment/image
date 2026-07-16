@@ -114,8 +114,6 @@ where
             (tiff::ColorType::Gray(1), Uint) => ColorType::L8,
             (tiff::ColorType::Gray(8), Uint) => ColorType::L8,
             (tiff::ColorType::Gray(16), Uint) => ColorType::L16,
-            (tiff::ColorType::Gray(16), IEEEFP) => ColorType::L32F,
-            (tiff::ColorType::Gray(32), IEEEFP) => ColorType::L32F,
             (tiff::ColorType::GrayA(8), Uint) => ColorType::La8,
             (tiff::ColorType::GrayA(16), Uint) => ColorType::La16,
             (tiff::ColorType::RGB(8), Uint) => ColorType::Rgb8,
@@ -124,11 +122,13 @@ where
             (tiff::ColorType::RGBA(16), Uint) => ColorType::Rgba16,
             (tiff::ColorType::CMYK(8), Uint) => ColorType::Rgb8,
             (tiff::ColorType::CMYK(16), Uint) => ColorType::Rgb16,
-            (tiff::ColorType::RGB(16), IEEEFP) => ColorType::Rgb32F,
-            (tiff::ColorType::RGBA(16), IEEEFP) => ColorType::Rgba32F,
-            (tiff::ColorType::RGB(32), IEEEFP) => ColorType::Rgb32F,
-            (tiff::ColorType::RGBA(32), IEEEFP) => ColorType::Rgba32F,
             (tiff::ColorType::YCbCr(8), Uint) => ColorType::Rgb8,
+            (tiff::ColorType::Gray(16), IEEEFP) => ColorType::L32F,
+            (tiff::ColorType::Gray(32), IEEEFP) => ColorType::L32F,
+            (tiff::ColorType::RGB(16), IEEEFP) => ColorType::Rgb32F,
+            (tiff::ColorType::RGB(32), IEEEFP) => ColorType::Rgb32F,
+            (tiff::ColorType::RGBA(16), IEEEFP) => ColorType::Rgba32F,
+            (tiff::ColorType::RGBA(32), IEEEFP) => ColorType::Rgba32F,
             _ => {
                 return Err(ImageError::Unsupported(
                     UnsupportedError::from_format_and_kind(
