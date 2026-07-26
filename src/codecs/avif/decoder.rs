@@ -755,11 +755,23 @@ impl<R: Read> AvifDecoder<R> {
 /// This ensures that in the case of `Again` all pending data is submitted
 /// This should be called after `send_data` (which does not yield `Again` when called the first time)
 fn read_until_ready(decoder: &mut dav1d::Decoder) -> ImageResult<dav1d::Picture> {
+    // `send_pending_data` returning `Ok` means there is no pending data left to submit. If
+    // `get_picture` then still yields `Again`, it is asking for data that cannot arrive, and
+    // looping costs nothing and achieves nothing - a crafted file can spin here forever. One
+    // retry is still allowed, since the flush itself may be what lets a picture through.
+    let mut drained = false;
     loop {
         match decoder.get_picture() {
             Err(dav1d::Error::Again) => match decoder.send_pending_data() {
-                Ok(()) => {}
-                Err(dav1d::Error::Again) => {}
+                Ok(()) => {
+                    if drained {
+                        return Err(error_map(
+                            "Avif decoder requested more data than the image contains",
+                        ));
+                    }
+                    drained = true;
+                }
+                Err(dav1d::Error::Again) => drained = false,
                 Err(e) => return Err(error_map(e)),
             },
             r => return r.map_err(error_map),
