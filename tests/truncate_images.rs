@@ -16,8 +16,7 @@ fn process_images<F>(dir: &str, input_format: ImageFormat, func: F)
 where
     F: Fn(PathBuf),
 {
-    let base: PathBuf = BASE_PATH.iter().collect();
-    let mut path = base.clone();
+    let mut path: PathBuf = BASE_PATH.iter().collect();
     path.push(dir);
     path.push("**");
     path.push("*");
