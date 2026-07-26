@@ -75,7 +75,7 @@ impl super::CmsProvider for Moxcms {
             )?,
             f32: Self::build_transforms(
                 f32_fallback.clone().map(Some),
-                f32_fallback.clone(),
+                f32_fallback,
                 output_coefs,
             )?,
             output_coefs,
@@ -164,7 +164,7 @@ impl Moxcms {
         let trs = trs.map(Option::unwrap);
 
         // rgb-rgb transforms are done directly via moxcms.
-        let slices = trs.clone().map(|tr| {
+        let slices = trs.map(|tr| {
             Arc::new(move |input: &[P], output: &mut [P]| {
                 tr.transform(input, output).expect("transform failed")
             }) as Arc<dyn Fn(&[P], &mut [P]) + Send + Sync>
@@ -302,7 +302,7 @@ impl Moxcms {
 
         // luma-luma both expand and contract
         let luma_luma = {
-            let [tr33, tr34, tr43, tr44] = f32.clone();
+            let [tr33, tr34, tr43, tr44] = f32;
 
             [
                 Arc::new(move |input: &[P], output: &mut [P]| {
