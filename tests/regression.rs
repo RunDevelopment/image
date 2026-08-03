@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{BufReader, Cursor};
+use std::io::{BufReader, Cursor, ErrorKind};
 use std::path::PathBuf;
 
 const BASE_PATH: [&str; 2] = [".", "tests"];
@@ -99,6 +99,32 @@ fn ico_bmp_v5_with_icc_profile() {
     // Verify the image has expected dimensions (127x64 from rgb24prof.bmp)
     assert_eq!(img.width(), 127);
     assert_eq!(img.height(), 64);
+}
+
+#[cfg(feature = "bmp")]
+#[test]
+fn bmp_v5_rejects_truncated_icc_profile_before_allocation() {
+    let mut bmp = vec![0; 138];
+    bmp[0..2].copy_from_slice(b"BM");
+    bmp[2..6].copy_from_slice(&138u32.to_le_bytes());
+    bmp[10..14].copy_from_slice(&138u32.to_le_bytes());
+    bmp[14..18].copy_from_slice(&124u32.to_le_bytes());
+    bmp[18..22].copy_from_slice(&1i32.to_le_bytes());
+    bmp[22..26].copy_from_slice(&1i32.to_le_bytes());
+    bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&32u16.to_le_bytes());
+    bmp[70..74].copy_from_slice(&u32::from_be_bytes(*b"MBED").to_le_bytes());
+    bmp[126..130].copy_from_slice(&0x90u32.to_le_bytes());
+    bmp[130..134].copy_from_slice(&u32::MAX.to_le_bytes());
+
+    let err = match image::codecs::bmp::BmpDecoder::new(Cursor::new(bmp)) {
+        Ok(_) => panic!("truncated ICC profile should fail"),
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(err, image::ImageError::IoError(err) if err.kind() == ErrorKind::UnexpectedEof)
+    );
 }
 
 // Test that BMP bitmaps with extra `BI_BITFIELD` values are parsed correctly.

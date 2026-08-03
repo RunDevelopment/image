@@ -1458,8 +1458,25 @@ impl<R: BufRead + Seek> BmpDecoder<R> {
 
     /// Read ICC profile data from the file.
     fn read_icc_profile(&mut self, icc: &ParsedIccProfile) -> ImageResult<()> {
+        let profile_end = icc
+            .profile_offset
+            .checked_add(u64::from(icc.profile_size))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "BMP ICC profile range overflow")
+            })?;
+        let stream_len = self.reader.seek(SeekFrom::End(0))?;
+        if profile_end > stream_len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "BMP ICC profile extends beyond file",
+            )
+            .into());
+        }
+
         self.reader.seek(SeekFrom::Start(icc.profile_offset))?;
-        let mut profile_data = vec![0u8; icc.profile_size as usize];
+        let profile_size = icc.profile_size as usize;
+        let mut profile_data = vec_try_with_capacity(profile_size)?;
+        profile_data.resize(profile_size, 0);
         self.reader.read_exact(&mut profile_data)?;
         self.icc_profile = Some(profile_data);
         Ok(())
