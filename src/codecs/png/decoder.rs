@@ -23,10 +23,36 @@ use crate::{
 
 const IPTC_KEYS: &[&str] = &["Raw profile type iptc", "Raw profile type 8bim"];
 
+/// Represents the inner state of a typical decoder:
+/// 1. `Init` - the decoder has been created but not yet started decoding.
+/// 2. `Decoding` - the decoder has read its reader and/or started being used for decoding.
+/// 3. `Failed` - the decoder has encountered an error and cannot continue.
+enum InnerState<I, D> {
+    Init(I),
+    Decoding(D),
+    Failed,
+}
+impl<I, D> InnerState<I, D> {
+    fn decode(&mut self, start_decoding: impl FnOnce(I) -> ImageResult<D>) -> ImageResult<&mut D> {
+        if matches!(self, InnerState::Init(_)) {
+            let decoder = match std::mem::replace(self, InnerState::Failed) {
+                InnerState::Init(decoder) => start_decoding(decoder)?,
+                _ => unreachable!(),
+            };
+            *self = InnerState::Decoding(decoder);
+        }
+
+        match self {
+            InnerState::Init(_) => unreachable!(),
+            InnerState::Decoding(decoder) => Ok(decoder),
+            InnerState::Failed => Err(failed_already()),
+        }
+    }
+}
+
 /// PNG decoder
 pub struct PngDecoder<R: BufRead + Seek> {
-    decoder: Option<png::Decoder<R>>,
-    reader: Option<png::Reader<R>>,
+    inner: InnerState<png::Decoder<R>, png::Reader<R>>,
     color_type: ColorType,
     limits: Limits,
 }
@@ -44,40 +70,31 @@ impl<R: BufRead + Seek> PngDecoder<R> {
         decoder.set_ignore_text_chunk(false);
 
         PngDecoder {
-            decoder: Some(decoder),
+            inner: InnerState::Init(decoder),
             // We'll replace this once we have a reader.
             color_type: ColorType::L8,
-            reader: None,
             limits,
         }
     }
 
     fn ensure_reader_and_header(&mut self) -> ImageResult<&mut png::Reader<R>> {
-        if self.reader.is_some() {
-            // We do this for borrow-checking issues, do not borrow self outside the conditional
-            // branch. So the None/Err case here is not reachable.
-            return self.reader.as_mut().ok_or_else(|| unreachable!());
-        }
+        self.inner.decode(|mut decoder| {
+            self.limits.check_support(&crate::LimitSupport::default())?;
 
-        let Some(mut decoder) = self.decoder.take() else {
-            return Err(reader_finished_already());
-        };
+            let info = decoder.read_header_info().map_err(ImageError::from_png)?;
+            self.limits.check_dimensions(info.width, info.height)?;
 
-        self.limits.check_support(&crate::LimitSupport::default())?;
+            // By default the PNG decoder will scale 16 bpc to 8 bpc, so custom
+            // transformations must be set. EXPAND preserves the default behavior
+            // expanding bpc < 8 to 8 bpc.
+            decoder.set_transformations(png::Transformations::EXPAND);
+            let reader = decoder.read_info().map_err(ImageError::from_png)?;
+            let (color_type, bits) = reader.output_color_type();
 
-        let info = decoder.read_header_info().map_err(ImageError::from_png)?;
-        self.limits.check_dimensions(info.width, info.height)?;
+            self.color_type = to_supported_color_type(color_type, bits)?;
 
-        // By default the PNG decoder will scale 16 bpc to 8 bpc, so custom
-        // transformations must be set. EXPAND preserves the default behavior
-        // expanding bpc < 8 to 8 bpc.
-        decoder.set_transformations(png::Transformations::EXPAND);
-        let reader = decoder.read_info().map_err(ImageError::from_png)?;
-        let (color_type, bits) = reader.output_color_type();
-
-        self.color_type = to_supported_color_type(color_type, bits)?;
-
-        Ok(self.reader.insert(reader))
+            Ok(reader)
+        })
     }
 
     /// Returns the gamma value of the image or None if no gamma value is indicated.
@@ -204,11 +221,12 @@ fn unsupported_color(color: ExtendedColorType) -> ImageError {
         UnsupportedErrorKind::Color(color),
     ))
 }
-
 fn decoding_started_already() -> ImageError {
     ImageError::Parameter(ParameterError::from_kind(ParameterErrorKind::NoMoreData))
 }
-
+fn failed_already() -> ImageError {
+    ImageError::Parameter(ParameterError::from_kind(ParameterErrorKind::FailedAlready))
+}
 fn reader_finished_already() -> ImageError {
     ImageError::Parameter(ParameterError::from_kind(ParameterErrorKind::NoMoreData))
 }
@@ -342,7 +360,7 @@ impl<R: BufRead + Seek> ImageDecoder for PngDecoder<R> {
     fn set_limits(&mut self, limits: Limits) -> ImageResult<()> {
         limits.check_support(&crate::LimitSupport::default())?;
 
-        if let Some(decoder) = &mut self.decoder {
+        if let InnerState::Init(decoder) = &mut self.inner {
             decoder.set_limits(png::Limits {
                 bytes: match limits.max_alloc {
                     None => usize::MAX,
