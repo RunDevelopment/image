@@ -50,26 +50,173 @@ impl<I, D> InnerState<I, D> {
     }
 }
 
-/// PNG decoder
+/// PNG decoder that can decode both animated and non-animated PNGs.
+///
+/// ## Decoding animated PNGs
+///
+/// Reading the complete animation requires more memory than reading the data from the IDAT
+/// frame. Multiple frame buffers need to be reserved at the same time.
+///
+/// If something is not supported or a limit is violated then the decoding step that requires
+/// them will fail and an error will be returned instead of the frame. No further frames will
+/// be returned.
 pub struct PngDecoder<R: BufRead + Seek> {
+    inner: InnerState<BasePngDecoder<R>, Decoder<R>>,
+}
+enum Decoder<R: BufRead + Seek> {
+    Image(BasePngDecoder<R>),
+    Animation(ApngDecoder<R>),
+}
+
+impl<R: BufRead + Seek> PngDecoder<R> {
+    /// Creates a new decoder that decodes from the stream ```r```
+    pub fn new(r: R) -> Self {
+        Self::with_limits(r, Limits::no_limits())
+    }
+
+    /// Creates a new decoder that decodes from the stream ```r``` with the given limits.
+    pub fn with_limits(r: R, limits: Limits) -> Self {
+        Self {
+            inner: InnerState::Init(BasePngDecoder::with_limits(r, limits)),
+        }
+    }
+
+    /// Returns the gamma value of the image or None if no gamma value is indicated.
+    ///
+    /// If an sRGB chunk is present this method returns a gamma value of 0.45455 and ignores the
+    /// value in the gAMA chunk. This is the recommended behavior according to the PNG standard:
+    ///
+    /// > When the sRGB chunk is present, [...] decoders that recognize the sRGB chunk but are not
+    /// > capable of colour management are recommended to ignore the gAMA and cHRM chunks, and use
+    /// > the values given above as if they had appeared in gAMA and cHRM chunks.
+    pub fn gamma_value(&mut self) -> ImageResult<Option<f64>> {
+        self.base_decoder()?.gamma_value()
+    }
+
+    /// Returns if the image contains an animation.
+    ///
+    /// This returns `true` if and only if [`ImageDecoder::animation_attributes`] returns `Some`.
+    ///
+    /// Note that the file itself decides if the default image is considered to be part of the
+    /// animation. When it is not the common interpretation is to use it as a thumbnail.
+    pub fn is_apng(&mut self) -> ImageResult<bool> {
+        Ok(matches!(self.decoder()?, Decoder::Animation(_)))
+    }
+
+    fn decoder(&mut self) -> ImageResult<&mut Decoder<R>> {
+        self.inner.decode(|mut decoder| {
+            let animation_control = decoder.ensure_reader_and_header()?.info().animation_control;
+            if let Some(animation_control) = animation_control {
+                Ok(Decoder::Animation(ApngDecoder::new(
+                    decoder,
+                    animation_control,
+                )?))
+            } else {
+                Ok(Decoder::Image(decoder))
+            }
+        })
+    }
+    fn base_decoder(&mut self) -> ImageResult<&mut BasePngDecoder<R>> {
+        match &mut self.inner {
+            InnerState::Init(decoder) => Ok(decoder),
+            InnerState::Decoding(Decoder::Image(decoder)) => Ok(decoder),
+            InnerState::Decoding(Decoder::Animation(decoder)) => Ok(&mut decoder.inner),
+            InnerState::Failed => Err(failed_already()),
+        }
+    }
+
+    fn has_more(&self) -> bool {
+        match &self.inner {
+            InnerState::Init(_) => true,
+            InnerState::Decoding(Decoder::Image(_)) => {
+                // TODO: Keep track of decoded images to return false after the first and only image has been decoded.
+                true
+            }
+            InnerState::Decoding(Decoder::Animation(decoder)) => decoder.remaining > 0,
+            InnerState::Failed => false,
+        }
+    }
+}
+impl<R: BufRead + Seek> ImageDecoder for PngDecoder<R> {
+    fn format_attributes(&self) -> FormatAttributes {
+        FormatAttributes {
+            supports_animation: true,
+            ..base_format_attributes()
+        }
+    }
+
+    fn animation_attributes(&mut self) -> Option<DecodedAnimationAttributes> {
+        // TODO: This silently swallows errors. This is a problem with the API design as errors cannot be returned.
+        let Ok(Decoder::Animation(decoder)) = self.decoder() else {
+            // not an animation
+            return None;
+        };
+
+        let loop_count = NonZeroU32::new(decoder.num_plays)
+            .map(LoopCount::Finite)
+            .unwrap_or(LoopCount::Infinite);
+
+        Some(DecodedAnimationAttributes { loop_count })
+    }
+
+    fn prepare_image(&mut self) -> ImageResult<DecoderPreparedImage> {
+        if !self.has_more() {
+            return Err(no_more_frames());
+        }
+        self.base_decoder()?.prepare_image()
+    }
+
+    fn set_limits(&mut self, limits: Limits) -> ImageResult<()> {
+        self.base_decoder()?.set_limits(limits)
+    }
+
+    fn icc_profile(&mut self) -> ImageResult<Option<Vec<u8>>> {
+        self.base_decoder()?.icc_profile()
+    }
+
+    fn exif_metadata(&mut self) -> ImageResult<Option<Vec<u8>>> {
+        self.base_decoder()?.exif_metadata()
+    }
+
+    fn xmp_metadata(&mut self) -> ImageResult<Option<Vec<u8>>> {
+        self.base_decoder()?.xmp_metadata()
+    }
+
+    fn iptc_metadata(&mut self) -> ImageResult<Option<Vec<u8>>> {
+        self.base_decoder()?.iptc_metadata()
+    }
+
+    fn read_image(&mut self, buf: &mut [u8]) -> ImageResult<DecodedImageAttributes> {
+        match self.decoder()? {
+            Decoder::Image(decoder) => decoder.read_image(buf),
+            Decoder::Animation(decoder) => decoder.mix_next_frame(buf),
+        }
+    }
+
+    fn more_images(&self) -> SequenceControl {
+        if self.has_more() {
+            SequenceControl::MaybeMore
+        } else {
+            SequenceControl::None
+        }
+    }
+}
+
+/// The base PNG decoder for decoding metadata and the first frame (of thumbnail) of a PNG file.
+struct BasePngDecoder<R: BufRead + Seek> {
     inner: InnerState<png::Decoder<R>, png::Reader<R>>,
     color_type: ColorType,
     limits: Limits,
 }
 
-impl<R: BufRead + Seek> PngDecoder<R> {
-    /// Creates a new decoder that decodes from the stream ```r```
-    pub fn new(r: R) -> PngDecoder<R> {
-        Self::with_limits(r, Limits::no_limits())
-    }
-
+impl<R: BufRead + Seek> BasePngDecoder<R> {
     /// Creates a new decoder that decodes from the stream ```r``` with the given limits.
-    pub fn with_limits(r: R, limits: Limits) -> PngDecoder<R> {
+    fn with_limits(r: R, limits: Limits) -> Self {
         let max_bytes = usize::try_from(limits.max_alloc.unwrap_or(u64::MAX)).unwrap_or(usize::MAX);
         let mut decoder = png::Decoder::new_with_limits(r, png::Limits { bytes: max_bytes });
         decoder.set_ignore_text_chunk(false);
 
-        PngDecoder {
+        BasePngDecoder {
             inner: InnerState::Init(decoder),
             // We'll replace this once we have a reader.
             color_type: ColorType::L8,
@@ -97,45 +244,12 @@ impl<R: BufRead + Seek> PngDecoder<R> {
         })
     }
 
-    /// Returns the gamma value of the image or None if no gamma value is indicated.
-    ///
-    /// If an sRGB chunk is present this method returns a gamma value of 0.45455 and ignores the
-    /// value in the gAMA chunk. This is the recommended behavior according to the PNG standard:
-    ///
-    /// > When the sRGB chunk is present, [...] decoders that recognize the sRGB chunk but are not
-    /// > capable of colour management are recommended to ignore the gAMA and cHRM chunks, and use
-    /// > the values given above as if they had appeared in gAMA and cHRM chunks.
-    pub fn gamma_value(&mut self) -> ImageResult<Option<f64>> {
+    fn gamma_value(&mut self) -> ImageResult<Option<f64>> {
         let reader = self.ensure_reader_and_header()?;
         Ok(reader
             .info()
             .source_gamma
             .map(|x| f64::from(x.into_scaled()) / 100_000.0))
-    }
-
-    /// Turn this into an iterator over the animation frames.
-    ///
-    /// Reading the complete animation requires more memory than reading the data from the IDAT
-    /// frame–multiple frame buffers need to be reserved at the same time. We further do not
-    /// support compositing 16-bit colors. In any case this would be lossy as the interface of
-    /// animation decoders does not support 16-bit colors.
-    ///
-    /// If something is not supported or a limit is violated then the decoding step that requires
-    /// them will fail and an error will be returned instead of the frame. No further frames will
-    /// be returned.
-    pub fn apng(self) -> ImageResult<ApngDecoder<R>> {
-        ApngDecoder::read_sequence_data(self)
-    }
-
-    /// Returns if the image contains an animation.
-    ///
-    /// Note that the file itself decides if the default image is considered to be part of the
-    /// animation. When it is not the common interpretation is to use it as a thumbnail.
-    ///
-    /// If a non-animated image is converted into an `ApngDecoder` then its iterator is empty.
-    pub fn is_apng(&mut self) -> ImageResult<bool> {
-        let reader = self.ensure_reader_and_header()?;
-        Ok(reader.info().animation_control.is_some())
     }
 
     /// The maximum number of bytes iTXt and zTXt are allowed to decompress to.
@@ -221,13 +335,14 @@ fn unsupported_color(color: ExtendedColorType) -> ImageError {
         UnsupportedErrorKind::Color(color),
     ))
 }
-fn decoding_started_already() -> ImageError {
+fn no_more_frames() -> ImageError {
     ImageError::Parameter(ParameterError::from_kind(ParameterErrorKind::NoMoreData))
 }
 fn failed_already() -> ImageError {
     ImageError::Parameter(ParameterError::from_kind(ParameterErrorKind::FailedAlready))
 }
-fn reader_finished_already() -> ImageError {
+fn decoding_started_already() -> ImageError {
+    // TODO: This parameter error makes no sense for how this is used
     ImageError::Parameter(ParameterError::from_kind(ParameterErrorKind::NoMoreData))
 }
 
@@ -247,7 +362,23 @@ fn big_endian_to_native_endian(buf: &mut [u8], color: ColorType) {
     }
 }
 
-impl<R: BufRead + Seek> ImageDecoder for PngDecoder<R> {
+fn base_format_attributes() -> FormatAttributes {
+    FormatAttributes {
+        // is any sort of iTXT chunk.
+        // FIXME: we do not collect these in advance.
+        xmp: DecodedMetadataHint::InHeader,
+        // is any sort of iTXT chunk.
+        // FIXME: we do not collect these in advance.
+        iptc: DecodedMetadataHint::InHeader,
+        // see iCCP chunk order.
+        icc: DecodedMetadataHint::InHeader,
+        // see eXIf chunk order.
+        exif: DecodedMetadataHint::InHeader,
+        ..FormatAttributes::default()
+    }
+}
+
+impl<R: BufRead + Seek> ImageDecoder for BasePngDecoder<R> {
     fn prepare_image(&mut self) -> ImageResult<DecoderPreparedImage> {
         let reader = self.ensure_reader_and_header()?;
         let (width, height) = reader.info().size();
@@ -255,24 +386,7 @@ impl<R: BufRead + Seek> ImageDecoder for PngDecoder<R> {
     }
 
     fn format_attributes(&self) -> FormatAttributes {
-        FormatAttributes {
-            // is any sort of iTXT chunk.
-            // FIXME: we do not collect these in advance.
-            xmp: DecodedMetadataHint::InHeader,
-            // is any sort of iTXT chunk.
-            // FIXME: we do not collect these in advance.
-            iptc: DecodedMetadataHint::InHeader,
-            // see iCCP chunk order.
-            icc: DecodedMetadataHint::InHeader,
-            // see eXIf chunk order.
-            exif: DecodedMetadataHint::InHeader,
-            ..FormatAttributes::default()
-        }
-    }
-
-    /// Only for [`ApngDecoder`].
-    fn animation_attributes(&mut self) -> Option<DecodedAnimationAttributes> {
-        None
+        base_format_attributes()
     }
 
     fn icc_profile(&mut self) -> ImageResult<Option<Vec<u8>>> {
@@ -376,11 +490,9 @@ impl<R: BufRead + Seek> ImageDecoder for PngDecoder<R> {
     }
 }
 
-/// An animated adapter of [`PngDecoder`].
-///
-/// See [`PngDecoder::apng`] for more information.
-pub struct ApngDecoder<R: BufRead + Seek> {
-    inner: PngDecoder<R>,
+/// An animated adapter of [`BasePngDecoder`].
+struct ApngDecoder<R: BufRead + Seek> {
+    inner: BasePngDecoder<R>,
     /// The current output buffer.
     current: Option<DynamicImage>,
     /// The previous output buffer, used for dispose op previous.
@@ -394,18 +506,18 @@ pub struct ApngDecoder<R: BufRead + Seek> {
     dispose_region: Option<Rect>,
     /// The number of image still expected to be able to load.
     remaining: u32,
+    /// The number of times the animation should be played.
+    num_plays: u32,
     /// The next (first) image is the thumbnail.
     has_thumbnail: bool,
 }
 
 impl<R: BufRead + Seek> ApngDecoder<R> {
-    fn read_sequence_data(mut inner: PngDecoder<R>) -> ImageResult<Self> {
+    fn new(
+        mut inner: BasePngDecoder<R>,
+        animation_control: png::AnimationControl,
+    ) -> ImageResult<Self> {
         let reader = inner.ensure_reader_and_header()?;
-        let remaining = match reader.info().animation_control() {
-            // The expected number of fcTL in the remaining image.
-            Some(actl) => actl.num_frames,
-            None => 0,
-        };
 
         // If the IDAT has no fcTL then it is not part of the animation counted by
         // num_frames. All following fdAT chunks must be preceded by an fcTL
@@ -418,19 +530,17 @@ impl<R: BufRead + Seek> ApngDecoder<R> {
             raw_frame_buffer: vec![],
             dispose: DisposeOp::Background,
             dispose_region: None,
-            remaining,
+            remaining: animation_control.num_frames,
+            num_plays: animation_control.num_plays,
             has_thumbnail,
         })
     }
 
     /// Decode one subframe and overlay it on the canvas.
-    fn mix_next_frame(
-        &mut self,
-        buf: &mut [u8],
-    ) -> Result<Option<DecodedImageAttributes>, ImageError> {
+    fn mix_next_frame(&mut self, buf: &mut [u8]) -> Result<DecodedImageAttributes, ImageError> {
         // Remove this image from remaining.
         self.remaining = match self.remaining.checked_sub(1) {
-            None => return Ok(None),
+            None => return Err(no_more_frames()),
             Some(next) => next,
         };
 
@@ -592,51 +702,7 @@ impl<R: BufRead + Seek> ApngDecoder<R> {
         // Return composited output buffer.
         buf.copy_from_slice(current.as_bytes());
 
-        Ok(Some(attributes))
-    }
-}
-
-impl<R: BufRead + Seek> ImageDecoder for ApngDecoder<R> {
-    fn format_attributes(&self) -> FormatAttributes {
-        FormatAttributes {
-            supports_animation: true,
-            ..self.inner.format_attributes()
-        }
-    }
-
-    fn animation_attributes(&mut self) -> Option<DecodedAnimationAttributes> {
-        let count = if let Ok(reader) = self.inner.ensure_reader_and_header() {
-            reader.info().animation_control()
-        } else {
-            return None;
-        };
-
-        let loop_count = match count {
-            None => LoopCount::Infinite,
-            Some(actl) if actl.num_plays == 0 => LoopCount::Infinite,
-            Some(actl) => LoopCount::Finite(
-                NonZeroU32::new(actl.num_plays).expect("num_plays should be non-zero"),
-            ),
-        };
-
-        Some(DecodedAnimationAttributes { loop_count })
-    }
-
-    fn prepare_image(&mut self) -> ImageResult<DecoderPreparedImage> {
-        self.inner.prepare_image()
-    }
-
-    fn read_image(&mut self, buf: &mut [u8]) -> ImageResult<DecodedImageAttributes> {
-        self.mix_next_frame(buf)?
-            .ok_or_else(reader_finished_already)
-    }
-
-    fn more_images(&self) -> SequenceControl {
-        if self.remaining > 0 {
-            SequenceControl::MaybeMore
-        } else {
-            SequenceControl::None
-        }
+        Ok(attributes)
     }
 }
 
@@ -828,7 +894,7 @@ mod tests {
     #[test]
     fn apng_16_bits_per_channel() {
         let file = BufReader::new(std::fs::File::open("tests/images/png/apng/rgba16.png").unwrap());
-        let decoder = PngDecoder::new(file).apng().unwrap();
+        let decoder = PngDecoder::new(file);
         let reader = crate::ImageReader::from_decoder(Box::new(decoder));
         let frames = reader.into_frames().collect_frames().unwrap();
         assert_eq!(frames.len(), 3);
